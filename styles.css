@@ -20,7 +20,8 @@ body {
     background-color: var(--bg-base);
     color: var(--text-primary);
     font-family: var(--font-body);
-    height: 100vh;
+    height: 100dvh; /* Dynamic viewport height fixes mobile scrolling */
+    min-height: -webkit-fill-available;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -96,6 +97,8 @@ body {
 .controls-area {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     padding-bottom: 1rem;
+    flex-shrink: 0;
+    z-index: 10;
 }
 .mic-container { position: relative; width: 100px; height: 100px; display: flex; align-items: center; justify-content: center; margin-bottom: 1rem; }
 .mic-btn {

@@ -168,7 +168,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Text to Speech
     function speakText(text) {
-        if (!synth) return;
+        if (!synth) {
+            // Automatically turn on the mic for the user to reply if no TTS
+            setTimeout(() => {
+                if (!isRecording) {
+                    try { recognition.start(); } catch(e) {}
+                }
+            }, 1000);
+            return;
+        }
         
         // Remove markdown characters for better reading
         const cleanText = text.replace(/[*#_]/g, '');
@@ -183,6 +191,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (plVoice) {
             utterance.voice = plVoice;
         }
+
+        utterance.onend = () => {
+            // Automatically turn on the mic for the user to reply
+            setTimeout(() => {
+                if (!isRecording && apiKey) {
+                    try { recognition.start(); } catch(e) {}
+                }
+            }, 500); // slight pause before listening
+        };
 
         synth.speak(utterance);
     }
