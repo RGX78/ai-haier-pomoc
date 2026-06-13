@@ -231,41 +231,79 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 800);
     }
 
-    // Text to Speech
+    // Text to Speech - sentence-by-sentence to avoid Chrome TTS freeze bug
     function speakText(text) {
         if (!synth) {
             startListeningAfterAI();
             return;
         }
-        
+
+        // Cancel any previous speech
+        synth.cancel();
+
         const cleanText = text.replace(/[*#_]/g, '');
-        const utterance = new SpeechSynthesisUtterance(cleanText);
-        window.currentUtterance = utterance;
-        
-        utterance.lang = 'pl-PL';
-        utterance.rate = 1.0;
-        
-        const voices = synth.getVoices();
-        const plVoice = voices.find(voice => voice.lang.includes('pl') || voice.lang.includes('PL'));
-        if (plVoice) {
-            utterance.voice = plVoice;
+
+        // Split into short chunks by sentence boundaries
+        const sentences = cleanText
+            .split(/(?<=[.!?:;])\s+|(?<=\n)/)
+            .map(s => s.trim())
+            .filter(s => s.length > 0);
+
+        if (sentences.length === 0) {
+            startListeningAfterAI();
+            return;
         }
 
-        utterance.onend = () => {
-            startListeningAfterAI();
-        };
+        // Find Polish voice once
+        const voices = synth.getVoices();
+        const plVoice = voices.find(v => v.lang.includes('pl') || v.lang.includes('PL'));
 
-        // Chrome bug workaround: long utterances get cut off
-        // Restart synth periodically to prevent it
-        let resumeTimer = setInterval(() => {
-            if (!synth.speaking) {
-                clearInterval(resumeTimer);
-            } else {
-                synth.pause();
-                synth.resume();
+        let currentIndex = 0;
+        let watchdog = null;
+
+        function speakNext() {
+            // Clear any previous watchdog
+            if (watchdog) clearTimeout(watchdog);
+
+            if (currentIndex >= sentences.length) {
+                // All done!
+                startListeningAfterAI();
+                return;
             }
-        }, 10000);
 
-        synth.speak(utterance);
+            const chunk = sentences[currentIndex];
+            const utt = new SpeechSynthesisUtterance(chunk);
+            window.currentUtterance = utt; // Prevent GC
+
+            utt.lang = 'pl-PL';
+            utt.rate = 1.0;
+            if (plVoice) utt.voice = plVoice;
+
+            utt.onend = () => {
+                if (watchdog) clearTimeout(watchdog);
+                currentIndex++;
+                speakNext();
+            };
+
+            utt.onerror = () => {
+                if (watchdog) clearTimeout(watchdog);
+                currentIndex++;
+                speakNext();
+            };
+
+            synth.speak(utt);
+
+            // Watchdog: if this chunk hasn't finished in 15 seconds,
+            // Chrome is frozen — force skip to next chunk
+            watchdog = setTimeout(() => {
+                if (synth.speaking) {
+                    synth.cancel();
+                    currentIndex++;
+                    speakNext();
+                }
+            }, 15000);
+        }
+
+        speakNext();
     }
 });
