@@ -54,28 +54,51 @@ document.addEventListener('DOMContentLoaded', () => {
         settingsModal.classList.add('hidden');
     });
 
+    // State flags
+    let manualStop = false;
+    let waitingForAI = false;
+
     // Speech Recognition Setup
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
         recognition = new SpeechRecognition();
         recognition.lang = 'pl-PL';
+        recognition.continuous = true;       // Keep listening until manually stopped
         recognition.interimResults = false;
         recognition.maxAlternatives = 1;
 
         recognition.onstart = () => {
             isRecording = true;
             micBtn.classList.add('recording');
-            statusText.textContent = "Słucham...";
+            statusText.textContent = "Słucham... (mów teraz)";
         };
 
         recognition.onresult = (event) => {
-            const transcript = event.results[0][0].transcript;
+            // Grab the latest final result
+            const lastResult = event.results[event.results.length - 1];
+            if (!lastResult.isFinal) return;
+            
+            const transcript = lastResult[0].transcript.trim();
+            if (!transcript || waitingForAI) return;
+            
+            waitingForAI = true;
+            // Stop listening while AI processes
+            manualStop = true;
+            recognition.stop();
+            
             addMessage(transcript, 'user');
             sendToGemini(transcript);
         };
 
         recognition.onerror = (event) => {
-            statusText.textContent = "Błąd mikrofonu: " + event.error;
+            if (event.error === 'no-speech') {
+                // User didn't say anything - just keep listening
+                statusText.textContent = "Nie usłyszałem. Naciśnij mikrofon i spróbuj ponownie.";
+            } else if (event.error === 'aborted') {
+                // Intentional stop, do nothing
+            } else {
+                statusText.textContent = "Błąd mikrofonu: " + event.error;
+            }
             micBtn.classList.remove('recording');
             isRecording = false;
         };
@@ -83,7 +106,21 @@ document.addEventListener('DOMContentLoaded', () => {
         recognition.onend = () => {
             micBtn.classList.remove('recording');
             isRecording = false;
-            statusText.textContent = "Naciśnij mikrofon, aby mówić";
+            
+            if (!manualStop && !waitingForAI) {
+                // Recognition ended unexpectedly (e.g. silence timeout)
+                // Auto-restart it so user can keep talking
+                try {
+                    recognition.start();
+                } catch(e) {
+                    statusText.textContent = "Naciśnij mikrofon, aby mówić";
+                }
+            } else {
+                manualStop = false;
+                if (!waitingForAI) {
+                    statusText.textContent = "Naciśnij mikrofon, aby mówić";
+                }
+            }
         };
     } else {
         statusText.textContent = "Twoja przeglądarka nie wspiera rozpoznawania głosu.";
@@ -97,13 +134,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         if (isRecording) {
+            manualStop = true;
             recognition.stop();
         } else {
             // Stop any ongoing TTS before listening
-            if (synth.speaking) {
+            if (synth && synth.speaking) {
                 synth.cancel();
             }
-            recognition.start();
+            manualStop = false;
+            waitingForAI = false;
+            try {
+                recognition.start();
+            } catch(e) {
+                statusText.textContent = "Nie mogę włączyć mikrofonu. Spróbuj odświeżyć stronę.";
+            }
         }
     });
 
@@ -158,28 +202,45 @@ document.addEventListener('DOMContentLoaded', () => {
 
             addMessage(aiText, 'ai');
             speakText(aiText);
-            statusText.textContent = "Naciśnij mikrofon, aby mówić";
 
         } catch (error) {
             addMessage("Przepraszam, wystąpił błąd: " + error.message, 'ai');
-            statusText.textContent = "Naciśnij mikrofon, aby mówić";
+            waitingForAI = false;
+            startListeningAfterAI();
         }
+    }
+
+    // Start listening after AI finishes
+    function startListeningAfterAI() {
+        waitingForAI = false;
+        manualStop = false;
+        statusText.textContent = "Naciśnij mikrofon, aby odpowiedzieć";
+        // Flash the mic button to indicate it's ready
+        micBtn.style.boxShadow = "0 0 30px var(--accent-primary)";
+        setTimeout(() => { micBtn.style.boxShadow = ""; }, 2500);
+        
+        // Try to auto-start mic
+        setTimeout(() => {
+            if (!isRecording && apiKey) {
+                try {
+                    recognition.start();
+                } catch(e) {
+                    statusText.textContent = "Naciśnij mikrofon, aby odpowiedzieć";
+                }
+            }
+        }, 800);
     }
 
     // Text to Speech
     function speakText(text) {
         if (!synth) {
-            setTimeout(() => {
-                if (!isRecording) {
-                    try { recognition.start(); } catch(e) { statusText.textContent = "Naciśnij mikrofon, aby mówić"; }
-                }
-            }, 1000);
+            startListeningAfterAI();
             return;
         }
         
         const cleanText = text.replace(/[*#_]/g, '');
         const utterance = new SpeechSynthesisUtterance(cleanText);
-        window.currentUtterance = utterance; // Zapobiega usuwaniu obiektu przez Garbage Collector w mobilnym Chrome/Safari!
+        window.currentUtterance = utterance;
         
         utterance.lang = 'pl-PL';
         utterance.rate = 1.0;
@@ -191,20 +252,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         utterance.onend = () => {
-            setTimeout(() => {
-                if (!isRecording && apiKey) {
-                    try { 
-                        recognition.start(); 
-                    } catch(e) {
-                        // Jeśli przeglądarka (np. Safari) zablokuje automatyczne włączenie mikrofonu,
-                        // pokazujemy wyraźny komunikat
-                        statusText.textContent = "Naciśnij mikrofon, aby odpowiedzieć";
-                        micBtn.style.boxShadow = "0 0 20px var(--accent-secondary)";
-                        setTimeout(() => micBtn.style.boxShadow = "", 2000);
-                    }
-                }
-            }, 500);
+            startListeningAfterAI();
         };
+
+        // Chrome bug workaround: long utterances get cut off
+        // Restart synth periodically to prevent it
+        let resumeTimer = setInterval(() => {
+            if (!synth.speaking) {
+                clearInterval(resumeTimer);
+            } else {
+                synth.pause();
+                synth.resume();
+            }
+        }, 10000);
 
         synth.speak(utterance);
     }
