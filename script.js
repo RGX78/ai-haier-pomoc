@@ -15,6 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let recognition;
     let synth = window.speechSynthesis;
     let conversationHistory = [];
+    let isSpeaking = false;
 
     // Haier Manual Context
     const systemInstruction = `Jesteś profesjonalnym serwisantem pralki Haier HW80-B14959S8U1S. Twoim zadaniem jest pomaganie użytkownikowi w diagnozowaniu problemów krok po kroku. Jesteś interaktywnym asystentem głosowym. Twoje odpowiedzi muszą być BARDZO KRÓTKIE i naturalne (jak w rozmowie). Podawaj instrukcje tylko po JEDNYM kroku na raz i czekaj na potwierdzenie.
@@ -54,16 +55,12 @@ document.addEventListener('DOMContentLoaded', () => {
         settingsModal.classList.add('hidden');
     });
 
-    // State flags
-    let manualStop = false;
-    let waitingForAI = false;
-
     // Speech Recognition Setup
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
         recognition = new SpeechRecognition();
         recognition.lang = 'pl-PL';
-        recognition.continuous = true;       // Keep listening until manually stopped
+        recognition.continuous = false;
         recognition.interimResults = false;
         recognition.maxAlternatives = 1;
 
@@ -74,30 +71,17 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         recognition.onresult = (event) => {
-            // Grab the latest final result
-            const lastResult = event.results[event.results.length - 1];
-            if (!lastResult.isFinal) return;
-            
-            const transcript = lastResult[0].transcript.trim();
-            if (!transcript || waitingForAI) return;
-            
-            waitingForAI = true;
-            // Stop listening while AI processes
-            manualStop = true;
-            recognition.stop();
-            
+            const transcript = event.results[0][0].transcript.trim();
+            if (!transcript) return;
             addMessage(transcript, 'user');
             sendToGemini(transcript);
         };
 
         recognition.onerror = (event) => {
             if (event.error === 'no-speech') {
-                // User didn't say anything - just keep listening
-                statusText.textContent = "Nie usłyszałem. Naciśnij mikrofon i spróbuj ponownie.";
-            } else if (event.error === 'aborted') {
-                // Intentional stop, do nothing
-            } else {
-                statusText.textContent = "Błąd mikrofonu: " + event.error;
+                statusText.textContent = "Nie usłyszałem. Spróbuj ponownie.";
+            } else if (event.error !== 'aborted') {
+                statusText.textContent = "Błąd: " + event.error;
             }
             micBtn.classList.remove('recording');
             isRecording = false;
@@ -106,47 +90,34 @@ document.addEventListener('DOMContentLoaded', () => {
         recognition.onend = () => {
             micBtn.classList.remove('recording');
             isRecording = false;
-            
-            if (!manualStop && !waitingForAI) {
-                // Recognition ended unexpectedly (e.g. silence timeout)
-                // Auto-restart it so user can keep talking
-                try {
-                    recognition.start();
-                } catch(e) {
-                    statusText.textContent = "Naciśnij mikrofon, aby mówić";
-                }
-            } else {
-                manualStop = false;
-                if (!waitingForAI) {
-                    statusText.textContent = "Naciśnij mikrofon, aby mówić";
-                }
-            }
+            statusText.textContent = "Naciśnij mikrofon, aby mówić";
         };
     } else {
         statusText.textContent = "Twoja przeglądarka nie wspiera rozpoznawania głosu.";
     }
 
-    // Mic Button Click
+    // Mic Button - MANUAL CONTROL ONLY
     micBtn.addEventListener('click', () => {
         if (!apiKey) {
             settingsModal.classList.remove('hidden');
             return;
         }
+
+        // If AI is speaking, stop it first
+        if (isSpeaking) {
+            synth.cancel();
+            isSpeaking = false;
+            statusText.textContent = "Zatrzymano czytanie. Naciśnij mikrofon, aby mówić.";
+            return;
+        }
         
         if (isRecording) {
-            manualStop = true;
             recognition.stop();
         } else {
-            // Stop any ongoing TTS before listening
-            if (synth && synth.speaking) {
-                synth.cancel();
-            }
-            manualStop = false;
-            waitingForAI = false;
             try {
                 recognition.start();
             } catch(e) {
-                statusText.textContent = "Nie mogę włączyć mikrofonu. Spróbuj odświeżyć stronę.";
+                statusText.textContent = "Spróbuj ponownie za chwilę.";
             }
         }
     });
@@ -160,7 +131,6 @@ document.addEventListener('DOMContentLoaded', () => {
             ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`
             : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg>`;
 
-        // Convert simple markdown bold to html
         let htmlText = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
         
         msgDiv.innerHTML = `
@@ -205,105 +175,84 @@ document.addEventListener('DOMContentLoaded', () => {
 
         } catch (error) {
             addMessage("Przepraszam, wystąpił błąd: " + error.message, 'ai');
-            waitingForAI = false;
-            startListeningAfterAI();
+            statusText.textContent = "Naciśnij mikrofon, aby mówić";
         }
     }
 
-    // Start listening after AI finishes
-    function startListeningAfterAI() {
-        waitingForAI = false;
-        manualStop = false;
-        statusText.textContent = "Naciśnij mikrofon, aby odpowiedzieć";
-        // Flash the mic button to indicate it's ready
-        micBtn.style.boxShadow = "0 0 30px var(--accent-primary)";
-        setTimeout(() => { micBtn.style.boxShadow = ""; }, 2500);
-        
-        // Try to auto-start mic
-        setTimeout(() => {
-            if (!isRecording && apiKey) {
-                try {
-                    recognition.start();
-                } catch(e) {
-                    statusText.textContent = "Naciśnij mikrofon, aby odpowiedzieć";
-                }
-            }
-        }, 800);
-    }
-
-    // Text to Speech - sentence-by-sentence to avoid Chrome TTS freeze bug
+    // Text to Speech - sentence by sentence
     function speakText(text) {
         if (!synth) {
-            startListeningAfterAI();
+            statusText.textContent = "Naciśnij mikrofon, aby mówić";
             return;
         }
 
-        // Cancel any previous speech
         synth.cancel();
 
         const cleanText = text.replace(/[*#_]/g, '');
-
-        // Split into short chunks by sentence boundaries
-        const sentences = cleanText
-            .split(/(?<=[.!?:;])\s+|(?<=\n)/)
-            .map(s => s.trim())
-            .filter(s => s.length > 0);
+        
+        // Split into short chunks (max ~80 chars each)
+        const rawSentences = cleanText.split(/(?<=[.!?:;])\s+|(?<=\n)/);
+        const sentences = [];
+        for (const s of rawSentences) {
+            const trimmed = s.trim();
+            if (!trimmed) continue;
+            // If sentence is still too long, break by commas too
+            if (trimmed.length > 80) {
+                const parts = trimmed.split(/,\s*/);
+                for (const p of parts) {
+                    if (p.trim()) sentences.push(p.trim());
+                }
+            } else {
+                sentences.push(trimmed);
+            }
+        }
 
         if (sentences.length === 0) {
-            startListeningAfterAI();
+            statusText.textContent = "Naciśnij mikrofon, aby mówić";
             return;
         }
 
-        // Find Polish voice once
         const voices = synth.getVoices();
         const plVoice = voices.find(v => v.lang.includes('pl') || v.lang.includes('PL'));
 
-        let currentIndex = 0;
-        let watchdog = null;
+        let idx = 0;
+        isSpeaking = true;
+        statusText.textContent = "AI mówi... (naciśnij mikrofon, aby przerwać)";
 
         function speakNext() {
-            // Clear any previous watchdog
-            if (watchdog) clearTimeout(watchdog);
-
-            if (currentIndex >= sentences.length) {
-                // All done!
-                startListeningAfterAI();
+            if (idx >= sentences.length || !isSpeaking) {
+                isSpeaking = false;
+                statusText.textContent = "Naciśnij mikrofon, aby mówić";
                 return;
             }
 
-            const chunk = sentences[currentIndex];
-            const utt = new SpeechSynthesisUtterance(chunk);
-            window.currentUtterance = utt; // Prevent GC
+            const utt = new SpeechSynthesisUtterance(sentences[idx]);
+            window._utt = utt; // prevent GC
 
             utt.lang = 'pl-PL';
             utt.rate = 1.0;
             if (plVoice) utt.voice = plVoice;
 
             utt.onend = () => {
-                if (watchdog) clearTimeout(watchdog);
-                currentIndex++;
-                speakNext();
+                idx++;
+                // Small delay between sentences to let Chrome breathe
+                setTimeout(speakNext, 100);
             };
 
             utt.onerror = () => {
-                if (watchdog) clearTimeout(watchdog);
-                currentIndex++;
-                speakNext();
+                idx++;
+                setTimeout(speakNext, 100);
             };
 
             synth.speak(utt);
-
-            // Watchdog: if this chunk hasn't finished in 15 seconds,
-            // Chrome is frozen — force skip to next chunk
-            watchdog = setTimeout(() => {
-                if (synth.speaking) {
-                    synth.cancel();
-                    currentIndex++;
-                    speakNext();
-                }
-            }, 15000);
         }
 
         speakNext();
+    }
+
+    // Preload voices (needed on some browsers)
+    if (synth) {
+        synth.getVoices();
+        synth.onvoiceschanged = () => synth.getVoices();
     }
 });
