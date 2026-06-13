@@ -169,23 +169,21 @@ document.addEventListener('DOMContentLoaded', () => {
     // Text to Speech
     function speakText(text) {
         if (!synth) {
-            // Automatically turn on the mic for the user to reply if no TTS
             setTimeout(() => {
                 if (!isRecording) {
-                    try { recognition.start(); } catch(e) {}
+                    try { recognition.start(); } catch(e) { statusText.textContent = "Naciśnij mikrofon, aby mówić"; }
                 }
             }, 1000);
             return;
         }
         
-        // Remove markdown characters for better reading
         const cleanText = text.replace(/[*#_]/g, '');
-        
         const utterance = new SpeechSynthesisUtterance(cleanText);
+        window.currentUtterance = utterance; // Zapobiega usuwaniu obiektu przez Garbage Collector w mobilnym Chrome/Safari!
+        
         utterance.lang = 'pl-PL';
         utterance.rate = 1.0;
         
-        // Try to find Polish voice
         const voices = synth.getVoices();
         const plVoice = voices.find(voice => voice.lang.includes('pl') || voice.lang.includes('PL'));
         if (plVoice) {
@@ -193,12 +191,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         utterance.onend = () => {
-            // Automatically turn on the mic for the user to reply
             setTimeout(() => {
                 if (!isRecording && apiKey) {
-                    try { recognition.start(); } catch(e) {}
+                    try { 
+                        recognition.start(); 
+                    } catch(e) {
+                        // Jeśli przeglądarka (np. Safari) zablokuje automatyczne włączenie mikrofonu,
+                        // pokazujemy wyraźny komunikat
+                        statusText.textContent = "Naciśnij mikrofon, aby odpowiedzieć";
+                        micBtn.style.boxShadow = "0 0 20px var(--accent-secondary)";
+                        setTimeout(() => micBtn.style.boxShadow = "", 2000);
+                    }
                 }
-            }, 500); // slight pause before listening
+            }, 500);
         };
 
         synth.speak(utterance);
